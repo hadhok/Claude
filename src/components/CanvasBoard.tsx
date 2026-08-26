@@ -39,6 +39,9 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   const containerRef = useRef<HTMLDivElement>(null);
   const panState = useRef<{ dragging: boolean; startX: number; startY: number } | null>(null);
 
+  const embeddingInFlight = useRef(new Set<string>());
+  const reconcileScheduled = useRef(false);
+
   useEffect(() => {
     embeddingEngine.whenReady().then(() => setAiReady(true));
   }, []);
@@ -88,17 +91,20 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
     [pan, zoom],
   );
 
-  async function linkAndCluster(newNode: Node) {
-    const others = nodes.filter((n) => n.id !== newNode.id && n.embedding);
-    const existingPairs = new Set(edges.map((e) => [e.source_id, e.target_id].sort().join("|")));
-    const links = suggestLinks(
-      [...others, { id: newNode.id, embedding: newNode.embedding! }].map((n) => ({
-        id: n.id,
-        embedding: (n as Node).embedding ?? (n as { embedding: number[] }).embedding,
-      })),
-      existingPairs,
-    ).filter((l) => l.source === newNode.id || l.target === newNode.id);
+  /**
+   * Recomputes links, contradictions and clusters across every embedded
+   * node on the canvas — not just the node that just changed. This is what
+   * lets two notes added by different collaborators (whose browsers embed
+   * independently) end up linked once both embeddings exist.
+   */
+  const reconcileCanvas = useCallback(async () => {
+    const embedded = nodes.filter((n) => n.embedding) as (Node & { embedding: number[] })[];
+    if (embedded.length < 2) return;
 
+    const existingAutoPairs = new Set(
+      edges.filter((e) => e.kind !== "contradiction").map((e) => [e.source_id, e.target_id].sort().join("|")),
+    );
+    const links = suggestLinks(embedded, existingAutoPairs);
     if (links.length > 0) {
       const { data } = await supabase
         .from("edges")
@@ -115,10 +121,12 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
       if (data) setEdges((prev) => [...prev, ...data]);
     }
 
-    const contradictions = suggestContradictions(
-      [...others, newNode].map((n) => ({ id: n.id, embedding: n.embedding!, content: n.content })),
-    ).filter((c) => c.source === newNode.id || c.target === newNode.id);
-
+    const existingContradictionPairs = new Set(
+      edges.filter((e) => e.kind === "contradiction").map((e) => [e.source_id, e.target_id].sort().join("|")),
+    );
+    const contradictions = suggestContradictions(embedded).filter(
+      (c) => !existingContradictionPairs.has([c.source, c.target].sort().join("|")),
+    );
     if (contradictions.length > 0) {
       const { data } = await supabase
         .from("edges")
@@ -134,13 +142,48 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
       if (data) setEdges((prev) => [...prev, ...data]);
     }
 
-    const allEmbedded = [...others, newNode].map((n) => ({ id: n.id, embedding: n.embedding! }));
-    const clusters = clusterByThreshold(allEmbedded);
-    const clusterId = clusters.get(newNode.id) ?? null;
-    if (clusterId !== null) {
-      await supabase.from("nodes").update({ cluster_id: clusterId }).eq("id", newNode.id);
+    const clusters = clusterByThreshold(embedded);
+    const changed = embedded.filter((n) => clusters.get(n.id) !== n.cluster_id);
+    for (const node of changed) {
+      const clusterId = clusters.get(node.id)!;
+      await supabase.from("nodes").update({ cluster_id: clusterId }).eq("id", node.id);
+      setNodes((prev) => prev.map((n) => (n.id === node.id ? { ...n, cluster_id: clusterId } : n)));
     }
-  }
+  }, [nodes, edges, supabase, canvas.id]);
+
+  // Embed any node that arrived without an embedding (created by a peer
+  // whose browser hadn't finished the on-device computation yet), then
+  // reconcile links/clusters across the whole canvas.
+  useEffect(() => {
+    if (!aiReady) return;
+    const missing = nodes.filter((n) => !n.embedding && !embeddingInFlight.current.has(n.id));
+    if (missing.length === 0) {
+      if (!reconcileScheduled.current) {
+        reconcileScheduled.current = true;
+        reconcileCanvas().finally(() => {
+          reconcileScheduled.current = false;
+        });
+      }
+      return;
+    }
+    for (const node of missing) {
+      embeddingInFlight.current.add(node.id);
+      embeddingEngine
+        .embed(node.content)
+        .then(async (vector) => {
+          const { data } = await supabase
+            .from("nodes")
+            .update({ embedding: vector })
+            .eq("id", node.id)
+            .select()
+            .single();
+          if (data) setNodes((prev) => prev.map((n) => (n.id === data.id ? data : n)));
+        })
+        .finally(() => {
+          embeddingInFlight.current.delete(node.id);
+        });
+    }
+  }, [aiReady, nodes, supabase, reconcileCanvas]);
 
   async function addNode(x: number, y: number) {
     const content = window.prompt("Ton idée :");
@@ -163,7 +206,6 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
       .single();
     if (updated) {
       setNodes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
-      await linkAndCluster(updated);
     }
   }
 
@@ -207,6 +249,10 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   }
 
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const clusterCount = useMemo(
+    () => new Set(nodes.map((n) => n.cluster_id).filter((c) => c !== null && c !== undefined)).size,
+    [nodes],
+  );
 
   return (
     <div className="flex h-screen flex-col bg-neutral-50 dark:bg-neutral-950">
@@ -217,7 +263,18 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
           </Link>
           <h1 className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">{canvas.title}</h1>
         </div>
-        <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+        <div className="flex items-center gap-4 text-xs text-neutral-500 dark:text-neutral-400">
+          <span>
+            {nodes.length} idée{nodes.length > 1 ? "s" : ""} · {clusterCount} thème
+            {clusterCount > 1 ? "s" : ""} · {edges.filter((e) => e.kind === "auto").length} lien
+            {edges.filter((e) => e.kind === "auto").length > 1 ? "s" : ""}
+            {edges.some((e) => e.kind === "contradiction") && (
+              <span className="text-red-500">
+                {" "}
+                · {edges.filter((e) => e.kind === "contradiction").length} contradiction(s)
+              </span>
+            )}
+          </span>
           {aiReady ? (
             <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
               <Brain size={14} /> IA locale prête

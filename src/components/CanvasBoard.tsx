@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Brain, Loader2 } from "lucide-react";
+import { ArrowLeft, Brain, Loader2, Search, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { embeddingEngine } from "@/lib/embedding";
+import { embeddingEngine, cosineSimilarity } from "@/lib/embedding";
 import { suggestLinks, suggestContradictions, clusterByThreshold } from "@/lib/clustering";
 import type { Canvas, Node, Edge } from "@/types/database";
 
@@ -41,6 +41,12 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
 
   const embeddingInFlight = useRef(new Set<string>());
   const reconcileScheduled = useRef(false);
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchScores, setSearchScores] = useState<Map<string, number> | null>(null);
+  const SEARCH_MATCH_THRESHOLD = 0.35;
 
   useEffect(() => {
     embeddingEngine.whenReady().then(() => setAiReady(true));
@@ -185,6 +191,29 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
     }
   }, [aiReady, nodes, supabase, reconcileCanvas]);
 
+  async function runSemanticSearch(query: string) {
+    if (!query.trim()) {
+      setSearchScores(null);
+      return;
+    }
+    setSearching(true);
+    const queryVector = await embeddingEngine.embed(query.trim());
+    const scores = new Map<string, number>();
+    for (const node of nodes) {
+      if (!node.embedding) continue;
+      const score = cosineSimilarity(queryVector, node.embedding);
+      if (score >= SEARCH_MATCH_THRESHOLD) scores.set(node.id, score);
+    }
+    setSearchScores(scores);
+    setSearching(false);
+  }
+
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchScores(null);
+  }
+
   async function addNode(x: number, y: number) {
     const content = window.prompt("Ton idée :");
     if (!content || !content.trim()) return;
@@ -284,8 +313,41 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
               <Loader2 size={14} className="animate-spin" /> Chargement du modèle IA...
             </span>
           )}
+          <button
+            onClick={() => setSearchOpen((v) => !v)}
+            disabled={!aiReady}
+            className="flex items-center gap-1 rounded-lg border border-neutral-200 px-2 py-1 text-neutral-600 transition hover:border-neutral-400 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300"
+            aria-label="Recherche sémantique"
+          >
+            <Search size={14} />
+          </button>
         </div>
       </header>
+
+      {searchOpen && (
+        <div className="flex items-center gap-2 border-b border-neutral-200 bg-white px-4 py-2 dark:border-neutral-800 dark:bg-neutral-900">
+          <Search size={14} className="text-neutral-400" />
+          <input
+            autoFocus
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              runSemanticSearch(e.target.value);
+            }}
+            placeholder="Cherche une idée par le sens, pas juste par mot-clé..."
+            className="flex-1 bg-transparent text-sm outline-none"
+          />
+          {searching && <Loader2 size={14} className="animate-spin text-neutral-400" />}
+          {searchScores && (
+            <span className="text-xs text-neutral-400">
+              {searchScores.size} résultat{searchScores.size > 1 ? "s" : ""}
+            </span>
+          )}
+          <button onClick={closeSearch} className="text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100">
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <div
         ref={containerRef}
@@ -328,6 +390,9 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
               node.cluster_id !== null && node.cluster_id !== undefined
                 ? CLUSTER_COLORS[node.cluster_id % CLUSTER_COLORS.length]
                 : "#e5e5e5";
+            const isSearchActive = searchScores !== null;
+            const matchScore = searchScores?.get(node.id);
+            const isMatch = matchScore !== undefined;
             return (
               <div
                 key={node.id}
@@ -335,13 +400,15 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
                   e.stopPropagation();
                   setDragNodeId(node.id);
                 }}
-                className="absolute w-[180px] cursor-move select-none rounded-lg border p-3 text-sm shadow-sm"
+                className="absolute w-[180px] cursor-move select-none rounded-lg border p-3 text-sm shadow-sm transition-opacity"
                 style={{
                   left: node.x,
                   top: node.y,
-                  borderColor: clusterColor,
-                  borderWidth: 2,
+                  borderColor: isSearchActive && isMatch ? "#6366f1" : clusterColor,
+                  borderWidth: isSearchActive && isMatch ? 3 : 2,
                   background: "white",
+                  opacity: isSearchActive && !isMatch ? 0.25 : 1,
+                  boxShadow: isSearchActive && isMatch ? "0 0 0 3px rgba(99,102,241,0.15)" : undefined,
                 }}
               >
                 {node.content}

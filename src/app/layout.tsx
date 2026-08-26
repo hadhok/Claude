@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "HabitLoop",
+  title: "NeuralCanvas",
   description: "Suivi d'habitudes gamifié avec insights IA",
   manifest: "/manifest.json",
 };

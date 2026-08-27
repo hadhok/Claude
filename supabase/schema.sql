@@ -8,6 +8,7 @@
 -- similarity is computed client-side.
 
 create extension if not exists "uuid-ossp";
+create extension if not exists "pgcrypto";
 
 -- Profiles: mirrors auth.users, one row per user
 create table if not exists public.profiles (

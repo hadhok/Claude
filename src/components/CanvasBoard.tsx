@@ -85,9 +85,30 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
     };
   }, []);
 
+  const [otherCursors, setOtherCursors] = useState<
+    Map<string, { x: number; y: number; color: string }>
+  >(new Map());
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const cursorRafRef = useRef<number | null>(null);
+  const pendingCursorRef = useRef<{ x: number; y: number } | null>(null);
+  const userColor = useMemo(() => {
+    const hash = Array.from(userId).reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    return CLUSTER_COLORS[hash % CLUSTER_COLORS.length];
+  }, [userId]);
+
   useEffect(() => {
     const channel = supabase
-      .channel(`canvas_${canvas.id}`)
+      .channel(`canvas_${canvas.id}`, { config: { presence: { key: userId } } })
+      .on("presence", { event: "sync" }, () => {
+        const state = channel.presenceState<{ x: number; y: number; color: string }>();
+        const next = new Map<string, { x: number; y: number; color: string }>();
+        for (const [key, presences] of Object.entries(state)) {
+          if (key === userId) continue;
+          const p = presences[0];
+          if (p) next.set(key, { x: p.x, y: p.y, color: p.color });
+        }
+        setOtherCursors(next);
+      })
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "nodes", filter: `canvas_id=eq.${canvas.id}` },
@@ -112,12 +133,31 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
           }
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          channel.track({ x: 0, y: 0, color: userColor });
+        }
+      });
+
+    channelRef.current = channel;
 
     return () => {
       supabase.removeChannel(channel);
+      channelRef.current = null;
     };
-  }, [supabase, canvas.id]);
+  }, [supabase, canvas.id, userId, userColor]);
+
+  function trackCursor(x: number, y: number) {
+    pendingCursorRef.current = { x, y };
+    if (cursorRafRef.current !== null) return;
+    cursorRafRef.current = requestAnimationFrame(() => {
+      cursorRafRef.current = null;
+      const pos = pendingCursorRef.current;
+      if (pos && channelRef.current) {
+        channelRef.current.track({ x: pos.x, y: pos.y, color: userColor });
+      }
+    });
+  }
 
   const screenToCanvas = useCallback(
     (clientX: number, clientY: number) => {
@@ -294,6 +334,9 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   }
 
   function onMouseMove(e: React.MouseEvent) {
+    const { x: cx, y: cy } = screenToCanvas(e.clientX, e.clientY);
+    trackCursor(cx, cy);
+
     if (dragNodeId) {
       const { x, y } = screenToCanvas(e.clientX, e.clientY);
       pendingMoveRef.current = { kind: "drag", x, y };
@@ -526,6 +569,24 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
               />
             </div>
           )}
+
+          {Array.from(otherCursors.entries()).map(([key, cursor]) => (
+            <div
+              key={key}
+              className="pointer-events-none absolute z-10 transition-transform duration-75"
+              style={{ left: cursor.x, top: cursor.y }}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill={cursor.color}>
+                <path d="M1 1l6 13 2-5 5-2z" />
+              </svg>
+              <span
+                className="ml-3 rounded px-1.5 py-0.5 text-[10px] font-medium text-white"
+                style={{ background: cursor.color }}
+              >
+                {key.slice(0, 6)}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
 

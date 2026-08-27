@@ -93,12 +93,69 @@ create policy "profiles_upsert_own" on public.profiles for insert with check (au
 drop policy if exists "profiles_update_own" on public.profiles;
 create policy "profiles_update_own" on public.profiles for update using (auth.uid() = id);
 
+-- Helper functions (SECURITY DEFINER) to break the RLS recursion that
+-- would otherwise happen when canvases' policy checks canvas_members and
+-- canvas_members' policy checks canvases: these run as the function owner,
+-- so their internal queries are not re-subject to the calling policies.
+create or replace function public.is_canvas_owner(target_canvas_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.canvases c
+    where c.id = target_canvas_id and c.owner_id = auth.uid()
+  );
+$$;
+
+create or replace function public.is_canvas_member(target_canvas_id uuid, roles text[] default null)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.canvas_members m
+    where m.canvas_id = target_canvas_id
+      and m.user_id = auth.uid()
+      and (roles is null or m.role = any(roles))
+  );
+$$;
+
+create or replace function public.can_access_canvas(target_canvas_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.canvases c
+    where c.id = target_canvas_id
+      and (c.is_public = true or c.owner_id = auth.uid() or public.is_canvas_member(target_canvas_id))
+  );
+$$;
+
+create or replace function public.can_edit_canvas(target_canvas_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select public.is_canvas_owner(target_canvas_id)
+      or public.is_canvas_member(target_canvas_id, array['owner', 'editor']);
+$$;
+
 -- Canvas visibility: owner, member, or public (read-only for public unless member)
 drop policy if exists "canvases_select" on public.canvases;
 create policy "canvases_select" on public.canvases for select using (
   is_public = true
   or owner_id = auth.uid()
-  or exists (select 1 from public.canvas_members m where m.canvas_id = id and m.user_id = auth.uid())
+  or public.is_canvas_member(id)
 );
 drop policy if exists "canvases_insert_own" on public.canvases;
 create policy "canvases_insert_own" on public.canvases for insert with check (owner_id = auth.uid());
@@ -109,67 +166,32 @@ create policy "canvases_delete_owner" on public.canvases for delete using (owner
 
 drop policy if exists "canvas_members_select" on public.canvas_members;
 create policy "canvas_members_select" on public.canvas_members for select using (
-  user_id = auth.uid()
-  or exists (select 1 from public.canvases c where c.id = canvas_id and c.owner_id = auth.uid())
+  user_id = auth.uid() or public.is_canvas_owner(canvas_id)
 );
 drop policy if exists "canvas_members_insert_self_or_owner" on public.canvas_members;
 create policy "canvas_members_insert_self_or_owner" on public.canvas_members for insert with check (
-  user_id = auth.uid()
-  or exists (select 1 from public.canvases c where c.id = canvas_id and c.owner_id = auth.uid())
+  user_id = auth.uid() or public.is_canvas_owner(canvas_id)
 );
 drop policy if exists "canvas_members_delete_owner" on public.canvas_members;
 create policy "canvas_members_delete_owner" on public.canvas_members for delete using (
-  exists (select 1 from public.canvases c where c.id = canvas_id and c.owner_id = auth.uid())
+  public.is_canvas_owner(canvas_id)
 );
 
 -- Access to nodes/edges/presence follows canvas access
 drop policy if exists "nodes_select" on public.nodes;
-create policy "nodes_select" on public.nodes for select using (
-  exists (
-    select 1 from public.canvases c
-    where c.id = canvas_id
-      and (c.is_public = true or c.owner_id = auth.uid()
-           or exists (select 1 from public.canvas_members m where m.canvas_id = c.id and m.user_id = auth.uid()))
-  )
-);
+create policy "nodes_select" on public.nodes for select using (public.can_access_canvas(canvas_id));
 drop policy if exists "nodes_write" on public.nodes;
 create policy "nodes_write" on public.nodes for all using (
-  exists (
-    select 1 from public.canvases c
-    where c.id = canvas_id
-      and (c.owner_id = auth.uid()
-           or exists (select 1 from public.canvas_members m where m.canvas_id = c.id and m.user_id = auth.uid() and m.role in ('owner','editor')))
-  )
+  public.can_edit_canvas(canvas_id)
 ) with check (author_id = auth.uid());
 
 drop policy if exists "edges_select" on public.edges;
-create policy "edges_select" on public.edges for select using (
-  exists (
-    select 1 from public.canvases c
-    where c.id = canvas_id
-      and (c.is_public = true or c.owner_id = auth.uid()
-           or exists (select 1 from public.canvas_members m where m.canvas_id = c.id and m.user_id = auth.uid()))
-  )
-);
+create policy "edges_select" on public.edges for select using (public.can_access_canvas(canvas_id));
 drop policy if exists "edges_write" on public.edges;
-create policy "edges_write" on public.edges for all using (
-  exists (
-    select 1 from public.canvases c
-    where c.id = canvas_id
-      and (c.owner_id = auth.uid()
-           or exists (select 1 from public.canvas_members m where m.canvas_id = c.id and m.user_id = auth.uid() and m.role in ('owner','editor')))
-  )
-);
+create policy "edges_write" on public.edges for all using (public.can_edit_canvas(canvas_id));
 
 drop policy if exists "presence_select" on public.presence;
-create policy "presence_select" on public.presence for select using (
-  exists (
-    select 1 from public.canvases c
-    where c.id = canvas_id
-      and (c.is_public = true or c.owner_id = auth.uid()
-           or exists (select 1 from public.canvas_members m where m.canvas_id = c.id and m.user_id = auth.uid()))
-  )
-);
+create policy "presence_select" on public.presence for select using (public.can_access_canvas(canvas_id));
 drop policy if exists "presence_write_own" on public.presence;
 create policy "presence_write_own" on public.presence for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 

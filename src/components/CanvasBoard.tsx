@@ -260,12 +260,10 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   }
 
   function onBackgroundMouseDown(e: React.MouseEvent) {
-    if (e.target !== e.currentTarget) return;
     panState.current = { dragging: true, startX: e.clientX - pan.x, startY: e.clientY - pan.y };
   }
 
   function onBackgroundDoubleClick(e: React.MouseEvent) {
-    if (e.target !== e.currentTarget) return;
     const { x, y } = screenToCanvas(e.clientX, e.clientY);
     openDraft(x, y);
   }
@@ -431,6 +429,7 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
                   e.stopPropagation();
                   setDragNodeId(node.id);
                 }}
+                onDoubleClick={(e) => e.stopPropagation()}
                 className="absolute w-[180px] cursor-move select-none rounded-lg border p-3 text-sm shadow-sm transition-opacity"
                 style={{
                   left: node.x,
@@ -452,6 +451,7 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
               className="absolute w-[180px] rounded-lg border-2 border-indigo-400 bg-white p-2 shadow-md"
               style={{ left: draft.x, top: draft.y }}
               onMouseDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
             >
               <textarea
                 ref={draftInputRef}

@@ -38,6 +38,10 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   const [dragNodeId, setDragNodeId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const panState = useRef<{ dragging: boolean; startX: number; startY: number } | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const pendingMoveRef = useRef<{ kind: "drag"; x: number; y: number } | { kind: "pan"; x: number; y: number } | null>(
+    null,
+  );
 
   const embeddingInFlight = useRef(new Set<string>());
   const reconcileScheduled = useRef(false);
@@ -58,6 +62,12 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
 
   useEffect(() => {
     embeddingEngine.whenReady().then(() => setAiReady(true));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -271,12 +281,33 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   function onMouseMove(e: React.MouseEvent) {
     if (dragNodeId) {
       const { x, y } = screenToCanvas(e.clientX, e.clientY);
-      setNodes((prev) => prev.map((n) => (n.id === dragNodeId ? { ...n, x, y } : n)));
+      pendingMoveRef.current = { kind: "drag", x, y };
+      scheduleFlush();
       return;
     }
     if (panState.current?.dragging) {
-      setPan({ x: e.clientX - panState.current.startX, y: e.clientY - panState.current.startY });
+      pendingMoveRef.current = {
+        kind: "pan",
+        x: e.clientX - panState.current.startX,
+        y: e.clientY - panState.current.startY,
+      };
+      scheduleFlush();
     }
+  }
+
+  function scheduleFlush() {
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const move = pendingMoveRef.current;
+      pendingMoveRef.current = null;
+      if (!move) return;
+      if (move.kind === "drag") {
+        setNodes((prev) => prev.map((n) => (n.id === dragNodeId ? { ...n, x: move.x, y: move.y } : n)));
+      } else {
+        setPan({ x: move.x, y: move.y });
+      }
+    });
   }
 
   async function onMouseUp() {

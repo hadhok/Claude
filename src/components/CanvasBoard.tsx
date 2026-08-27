@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Brain, Loader2, Search, X } from "lucide-react";
+import { ArrowLeft, Brain, Check, Link2, Loader2, Search, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { embeddingEngine, cosineSimilarity } from "@/lib/embedding";
 import { suggestLinks, suggestContradictions, clusterByThreshold } from "@/lib/clustering";
@@ -51,6 +51,21 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   const [searching, setSearching] = useState(false);
   const [searchScores, setSearchScores] = useState<Map<string, number> | null>(null);
   const SEARCH_MATCH_THRESHOLD = 0.35;
+
+  const [copied, setCopied] = useState(false);
+
+  async function copyShareLink() {
+    if (!canvas.share_token) return;
+    const url = `${window.location.origin}/join/${canvas.share_token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      window.prompt("Copie ce lien :", url);
+      return;
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
 
   const [draft, setDraft] = useState<{ x: number; y: number; text: string } | null>(null);
   const draftInputRef = useRef<HTMLTextAreaElement>(null);
@@ -370,6 +385,14 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
             aria-label="Recherche sémantique"
           >
             <Search size={14} />
+          </button>
+          <button
+            onClick={copyShareLink}
+            className="flex items-center gap-1 rounded-lg border border-neutral-200 px-2 py-1 text-neutral-600 transition hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300"
+            aria-label="Copier le lien de partage"
+          >
+            {copied ? <Check size={14} className="text-emerald-500" /> : <Link2 size={14} />}
+            {copied ? "Copié" : "Partager"}
           </button>
         </div>
       </header>

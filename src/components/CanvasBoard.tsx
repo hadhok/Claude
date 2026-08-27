@@ -48,6 +48,14 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   const [searchScores, setSearchScores] = useState<Map<string, number> | null>(null);
   const SEARCH_MATCH_THRESHOLD = 0.35;
 
+  const [draft, setDraft] = useState<{ x: number; y: number; text: string } | null>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement>(null);
+  const draftCancelledRef = useRef(false);
+
+  useEffect(() => {
+    if (draft) draftInputRef.current?.focus();
+  }, [draft]);
+
   useEffect(() => {
     embeddingEngine.whenReady().then(() => setAiReady(true));
   }, []);
@@ -214,19 +222,32 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
     setSearchScores(null);
   }
 
-  async function addNode(x: number, y: number) {
-    const content = window.prompt("Ton idée :");
-    if (!content || !content.trim()) return;
+  function openDraft(x: number, y: number) {
+    setDraft({ x, y, text: "" });
+  }
+
+  async function commitDraft() {
+    const pending = draft;
+    setDraft(null);
+    if (draftCancelledRef.current) {
+      draftCancelledRef.current = false;
+      return;
+    }
+    if (!pending || !pending.text.trim()) return;
+    const content = pending.text.trim();
 
     const { data, error } = await supabase
       .from("nodes")
-      .insert({ canvas_id: canvas.id, author_id: userId, content: content.trim(), x, y })
+      .insert({ canvas_id: canvas.id, author_id: userId, content, x: pending.x, y: pending.y })
       .select()
       .single();
-    if (error || !data) return;
+    if (error || !data) {
+      window.alert(`Impossible de créer l'idée : ${error?.message ?? "erreur inconnue"}`);
+      return;
+    }
     setNodes((prev) => [...prev, data]);
 
-    const vector = await embeddingEngine.embed(content.trim());
+    const vector = await embeddingEngine.embed(content);
     const { data: updated } = await supabase
       .from("nodes")
       .update({ embedding: vector })
@@ -246,7 +267,7 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
   function onBackgroundDoubleClick(e: React.MouseEvent) {
     if (e.target !== e.currentTarget) return;
     const { x, y } = screenToCanvas(e.clientX, e.clientY);
-    addNode(x, y);
+    openDraft(x, y);
   }
 
   function onMouseMove(e: React.MouseEvent) {
@@ -359,6 +380,16 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
         onMouseLeave={onMouseUp}
         onWheel={onWheel}
       >
+        {nodes.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
+            <p className="text-lg font-medium text-neutral-400 dark:text-neutral-600">
+              Ton canvas est vide
+            </p>
+            <p className="text-sm text-neutral-400 dark:text-neutral-600">
+              Double-clique n&apos;importe où pour déposer ta première idée
+            </p>
+          </div>
+        )}
         <div
           className="absolute left-0 top-0 h-full w-full origin-top-left"
           style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
@@ -415,6 +446,32 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
               </div>
             );
           })}
+
+          {draft && (
+            <div
+              className="absolute w-[180px] rounded-lg border-2 border-indigo-400 bg-white p-2 shadow-md"
+              style={{ left: draft.x, top: draft.y }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <textarea
+                ref={draftInputRef}
+                value={draft.text}
+                onChange={(e) => setDraft((d) => (d ? { ...d, text: e.target.value } : d))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    commitDraft();
+                  } else if (e.key === "Escape") {
+                    draftCancelledRef.current = true;
+                    setDraft(null);
+                  }
+                }}
+                onBlur={commitDraft}
+                placeholder="Ton idée... (Entrée pour valider)"
+                className="h-16 w-full resize-none bg-transparent text-sm outline-none"
+              />
+            </div>
+          )}
         </div>
       </div>
 

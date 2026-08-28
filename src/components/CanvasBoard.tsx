@@ -232,9 +232,17 @@ export default function CanvasBoard({ canvas, initialNodes, initialEdges, userId
 
   // Embed any node that arrived without an embedding (created by a peer
   // whose browser hadn't finished the on-device computation yet), then
-  // reconcile links/clusters across the whole canvas.
+  // reconcile links/clusters across the whole canvas. Gated on a content
+  // signature (not the raw `nodes` reference) so dragging a note - which
+  // updates x/y on every animation frame - never re-triggers this O(n^2)
+  // pass; only an actual node/content/embedding change does.
+  const lastReconcileSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     if (!aiReady) return;
+    const signature = nodes.map((n) => `${n.id}:${n.embedding ? 1 : 0}:${n.cluster_id ?? "-"}:${n.content}`).join("|");
+    if (signature === lastReconcileSignatureRef.current) return;
+    lastReconcileSignatureRef.current = signature;
+
     const missing = nodes.filter((n) => !n.embedding && !embeddingInFlight.current.has(n.id));
     if (missing.length === 0) {
       if (!reconcileScheduled.current) {

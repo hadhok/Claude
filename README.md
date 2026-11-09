@@ -65,3 +65,20 @@ Construit en 7 jours dans le cadre d'une expérience d'autonomie complète.
 - Pas de résumé de cluster généré automatiquement (seul le regroupement visuel existe)
 - Pas de gestion fine des rôles (viewer vs editor) dans l'UI — tout rejoignant devient éditeur
 - Le premier chargement de l'IA télécharge le modèle (~25 Mo, mis en cache par le navigateur ensuite)
+
+## career-ops (vendored)
+
+Le dossier `career-ops/` contient une copie de [santifer/career-ops](https://github.com/santifer/career-ops) (v1.39.0, commit `e83160c`, licence MIT — voir `career-ops/LICENSE`), l'agent open-source de recherche d'emploi piloté par Claude Code. Il est indépendant de NeuralCanvas : exclu du `tsconfig.json` et d'ESLint, avec ses propres dépendances.
+
+Démarrage :
+
+```bash
+cd career-ops
+npm install
+npx playwright install chromium   # pour la génération de PDF
+npm run doctor
+```
+
+Puis ouvrir Claude Code dans `career-ops/` : l'onboarding (CV, profil, rôles ciblés) se lance automatiquement. Voir `career-ops/README.md` et `career-ops/CLAUDE.md`.
+
+Mise à jour : recopier une version plus récente du dépôt amont dans `career-ops/` (les données personnelles — `cv.md`, `config/profile.yml`, `data/`, `reports/` — sont gitignorées par `career-ops/.gitignore`).
